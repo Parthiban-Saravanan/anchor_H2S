@@ -1,27 +1,29 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextRequest, NextResponse } from 'next/server'
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import { generateText } from 'ai'
 
-const genAI = new GoogleGenerativeAI(
-  process.env.GOOGLE_GENERATIVE_AI_API_KEY || ''
-)
+// Claude (Anthropic) via the Vercel AI Gateway. Anthropic is zero-config on the
+// gateway, so no provider package or API key setup is required here.
+const MODEL = 'anthropic/claude-haiku-4.5'
+
+const USER_FALLBACK =
+  "Take a slow breath in, and a slower breath out. This moment is hard, but it will pass, and you have made it through hard moments before. You are not alone right now."
+
+const SUPPORTER_FALLBACK =
+  "What you're feeling is a sign of how much you care. You can't carry this perfectly, and you don't have to. Take one steady breath, and know that simply being present is already a gift to them."
 
 export async function POST(request: NextRequest) {
+  let mode: string | undefined
+
   try {
-    const { session_id, user_id, mode } = await request.json()
+    const body = await request.json()
+    const { session_id, user_id } = body
+    mode = body.mode
 
     if (!session_id || !user_id || !mode) {
       return NextResponse.json(
         { error: 'Missing required fields' },
         { status: 400 }
-      )
-    }
-
-    if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-      console.error('Missing GOOGLE_GENERATIVE_AI_API_KEY')
-      return NextResponse.json(
-        { error: 'AI service not configured' },
-        { status: 500 }
       )
     }
 
@@ -43,49 +45,52 @@ export async function POST(request: NextRequest) {
     const session = sessionData.data
     const profile = profileData.data
 
-    // Build prompt
+    const sharedContext = session.context_text || 'They did not add details.'
+    const sharedBy = session.input_method === 'voice' ? 'speaking' : 'typing'
+
+    // Build a system + user prompt for Claude
+    let system = ''
     let prompt = ''
 
-    const sharedContext = session.context_text || 'They did not add details.'
-
     if (mode === 'user') {
-      prompt = `You are a compassionate crisis companion for someone in addiction recovery. 
-      
-Person's Profile:
-- Name: ${profile.profile_name || 'Friend'}
-- Triggers: ${profile.trigger_descriptions || 'Not specified'}
-- Coping activity: ${profile.coping_activity || 'Not specified'}
+      system =
+        'You are Anchor, a warm and compassionate crisis companion for someone in addiction recovery. ' +
+        'You speak directly to the person in a calm, steady, non-judgmental voice. ' +
+        'Never lecture, diagnose, or shame. Keep responses to 2-3 short sentences that can be read aloud calmly. ' +
+        'Always: (1) validate their feelings, (2) remind them of their own strength, (3) gently guide them toward a concrete next step.'
 
-Current Situation (they shared this by ${session.input_method === 'voice' ? 'speaking' : 'typing'}):
-"${sharedContext}"
-
-Generate a warm, compassionate 2-3 sentence script that:
-1. Validates their feelings
-2. Reminds them of their strength
-3. Gently guides them toward their coping activity (${profile.coping_activity || 'a calming activity'})
-
-Keep it personal, warm, and actionable. Speak directly to them.`
+      prompt =
+        `Person's profile:\n` +
+        `- Name: ${profile.profile_name || 'Friend'}\n` +
+        `- Known triggers: ${profile.trigger_descriptions || 'Not specified'}\n` +
+        `- Coping activity that helps them: ${profile.coping_activity || 'Not specified'}\n\n` +
+        `They just reached out by ${sharedBy} and shared:\n"${sharedContext}"\n\n` +
+        `Write a warm, personal 2-3 sentence message spoken directly to ${profile.profile_name || 'them'}. ` +
+        `Gently guide them toward their coping activity (${profile.coping_activity || 'a calming activity that grounds them'}).`
     } else {
-      prompt = `You are a supportive family member advisor for someone supporting a loved one in recovery.
+      system =
+        'You are Anchor, a supportive advisor for someone who is helping a loved one through addiction recovery. ' +
+        'You speak warmly and practically to the supporter. Keep responses to 2-3 short sentences. ' +
+        'Always: (1) validate the supporter\'s experience, (2) offer one practical, compassionate action, ' +
+        '(3) remind them that showing up is itself an act of love.'
 
-Situation they shared (by ${session.input_method === 'voice' ? 'speaking' : 'typing'}): "${sharedContext}"
-
-Generate a warm, empathetic 2-3 sentence guidance script that:
-1. Validates the caregiver's experience
-2. Offers practical, compassionate advice
-3. Reminds them that supporting someone is itself an act of love
-
-Keep it warm, practical, and encouraging.`
+      prompt =
+        `The supporter reached out by ${sharedBy} and shared:\n"${sharedContext}"\n\n` +
+        `Write a warm, practical 2-3 sentence message spoken directly to the supporter.`
     }
 
-    // Call Gemini API
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
-    const result = await model.generateContent(prompt)
-    const aiResponse =
-      result.response.text() ||
-      'Take a deep breath. You are stronger than you think. I believe in you.'
+    const { text } = await generateText({
+      model: MODEL,
+      system,
+      prompt,
+      temperature: 0.7,
+      maxRetries: 2,
+    })
 
-    // Update session with response
+    const aiResponse =
+      text?.trim() || (mode === 'user' ? USER_FALLBACK : SUPPORTER_FALLBACK)
+
+    // Persist the response so it survives refreshes / history
     const { error: updateError } = await supabase
       .from('sessions')
       .update({ ai_response: aiResponse })
@@ -97,13 +102,14 @@ Keep it warm, practical, and encouraging.`
 
     return NextResponse.json({ session_id, ai_response: aiResponse })
   } catch (error) {
-    console.error('API error:', error)
-    
+    console.error('generate-response error:', error)
+
+    // Calm, non-technical fallback so the person is never left with an error.
     const fallbackResponse =
-      "We are having trouble reaching Anchor right now, but your strength is still there. Take a moment to breathe. You have got this."
+      mode && mode !== 'user' ? SUPPORTER_FALLBACK : USER_FALLBACK
 
     return NextResponse.json(
-      { session_id: 'error', ai_response: fallbackResponse },
+      { session_id: 'error', ai_response: fallbackResponse, fallback: true },
       { status: 200 }
     )
   }
