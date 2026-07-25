@@ -174,6 +174,27 @@ export default function ContextCapture() {
     )
   }
 
+  // Calming full-screen state while Anchor prepares a response.
+  if (isSubmitting) {
+    return (
+      <main className="min-h-screen bg-background text-foreground flex items-center justify-center px-4">
+        <div className="flex flex-col items-center text-center max-w-md">
+          <div className="relative flex items-center justify-center mb-8">
+            <span className="absolute w-28 h-28 rounded-full bg-secondary/20 animate-ping" />
+            <span className="w-20 h-20 rounded-full bg-gradient-to-r from-primary to-secondary animate-pulse" />
+          </div>
+          <h1 className="text-2xl font-semibold text-primary mb-3 text-balance">
+            Anchor is here with you
+          </h1>
+          <p className="text-foreground/60 leading-relaxed text-pretty">
+            Take a slow breath while we put together something just for you.
+            This will only take a moment.
+          </p>
+        </div>
+      </main>
+    )
+  }
+
   return (
     <main className="min-h-screen bg-background text-foreground py-8 px-4">
       <div className="max-w-2xl mx-auto">
@@ -259,9 +280,16 @@ export default function ContextCapture() {
         {error && (
           <div
             role="alert"
-            className="mb-6 bg-destructive/10 border border-destructive/30 rounded-lg p-4 text-destructive"
+            className="mb-6 bg-destructive/10 border border-destructive/30 rounded-lg p-4 text-destructive flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
           >
-            {error}
+            <span className="text-pretty">{error}</span>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              className="shrink-0 rounded-lg border border-destructive/40 px-4 py-2 font-medium text-destructive transition-colors hover:bg-destructive/15"
+            >
+              Try again
+            </button>
           </div>
         )}
 
