@@ -11,12 +11,18 @@ interface Session {
   user_id: string
 }
 
+interface TrustedContact {
+  name: string
+  relation: string
+}
+
 export default function ResponseDisplay() {
   const router = useRouter()
   const params = useParams()
   const sessionId = params.sessionId as string
 
   const [session, setSession] = useState<Session | null>(null)
+  const [contact, setContact] = useState<TrustedContact | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [isAutoRead, setIsAutoRead] = useState(true)
@@ -40,6 +46,22 @@ export default function ResponseDisplay() {
 
         if (error) throw error
         setSession(data)
+
+        // Load the trusted contact for this user (if any)
+        if (data.user_id) {
+          const { data: profile } = await supabase
+            .from('users')
+            .select('trusted_contact_name, trusted_contact_relation')
+            .eq('id', data.user_id)
+            .single()
+
+          if (profile?.trusted_contact_name) {
+            setContact({
+              name: profile.trusted_contact_name,
+              relation: profile.trusted_contact_relation || '',
+            })
+          }
+        }
 
         // Auto-read response
         if (data.ai_response && synthRef.current && isAutoRead) {
@@ -170,6 +192,17 @@ export default function ResponseDisplay() {
 
         {/* Action Buttons */}
         <div className="space-y-4">
+          {contact && (
+            <div className="w-full flex items-center gap-3 bg-primary/10 border border-primary/30 text-primary font-semibold py-4 px-6 rounded-lg">
+              <Phone className="w-6 h-6 shrink-0" />
+              <span className="text-pretty">
+                Reach out to {contact.name}
+                {contact.relation ? ` (${contact.relation})` : ''} — you
+                don&apos;t have to do this alone.
+              </span>
+            </div>
+          )}
+
           <button
             onClick={() => router.push('/breathing')}
             className="w-full flex items-center justify-center gap-3 bg-secondary/10 border border-secondary/30 hover:bg-secondary/20 text-secondary font-semibold py-4 px-6 rounded-lg transition-all"

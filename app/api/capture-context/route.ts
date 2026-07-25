@@ -3,40 +3,42 @@ import { NextRequest, NextResponse } from 'next/server'
 
 export async function POST(request: NextRequest) {
   try {
-    const {
-      user_id,
-      mode,
-      voice_transcript,
-      context_alone,
-      context_urge_level,
-      context_location,
-    } = await request.json()
+    const { user_id, mode, context_text, input_method } = await request.json()
 
     if (!user_id) {
+      return NextResponse.json({ error: 'User ID required' }, { status: 400 })
+    }
+
+    const trimmedContext =
+      typeof context_text === 'string' ? context_text.trim() : ''
+
+    if (!trimmedContext) {
       return NextResponse.json(
-        { error: 'User ID required' },
+        { error: 'Please share what is going on before continuing.' },
         { status: 400 }
       )
     }
 
+    const sessionType = mode === 'caregiver' ? 'caregiver' : 'user'
+    const method = input_method === 'voice' ? 'voice' : 'typed'
+
     const supabase = await createClient()
 
-    // Create session record
     const { data, error } = await supabase
       .from('sessions')
       .insert([
         {
           user_id,
-          session_type: mode,
-          context_text: `Alone: ${context_alone}, Urge: ${context_urge_level}, Location: ${context_location}`,
-          voice_input_text: voice_transcript,
+          session_type: sessionType,
+          context_text: trimmedContext,
+          input_method: method,
         },
       ])
       .select()
       .single()
 
     if (error) {
-      console.error('Database error:', error)
+      console.error('[v0] capture-context db error:', error.message)
       return NextResponse.json(
         { error: 'Failed to create session' },
         { status: 500 }
@@ -45,7 +47,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ session_id: data.id })
   } catch (error) {
-    console.error('API error:', error)
+    console.error('[v0] capture-context api error:', error)
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

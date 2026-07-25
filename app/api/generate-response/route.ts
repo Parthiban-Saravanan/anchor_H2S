@@ -46,6 +46,8 @@ export async function POST(request: NextRequest) {
     // Build prompt
     let prompt = ''
 
+    const sharedContext = session.context_text || 'They did not add details.'
+
     if (mode === 'user') {
       prompt = `You are a compassionate crisis companion for someone in addiction recovery. 
       
@@ -54,21 +56,19 @@ Person's Profile:
 - Triggers: ${profile.trigger_descriptions || 'Not specified'}
 - Coping activity: ${profile.coping_activity || 'Not specified'}
 
-Current Situation:
-- What they shared: "${session.voice_input_text}"
-- Alone: ${session.context_text}
-- Urge level: ${session.context_text}
+Current Situation (they shared this by ${session.input_method === 'voice' ? 'speaking' : 'typing'}):
+"${sharedContext}"
 
 Generate a warm, compassionate 2-3 sentence script that:
 1. Validates their feelings
 2. Reminds them of their strength
-3. Gently guides them toward their coping activity (${profile.coping_activity})
+3. Gently guides them toward their coping activity (${profile.coping_activity || 'a calming activity'})
 
 Keep it personal, warm, and actionable. Speak directly to them.`
     } else {
       prompt = `You are a supportive family member advisor for someone supporting a loved one in recovery.
 
-Situation they shared: "${session.voice_input_text}"
+Situation they shared (by ${session.input_method === 'voice' ? 'speaking' : 'typing'}): "${sharedContext}"
 
 Generate a warm, empathetic 2-3 sentence guidance script that:
 1. Validates the caregiver's experience

@@ -81,7 +81,7 @@ export default function SetupWizard() {
         trigger_descriptions: triggers.join(', '),
         coping_activity: copingActivity,
         trusted_contact_name: contactName,
-        trusted_contact_number: contactRelation,
+        trusted_contact_relation: contactRelation,
       })
 
       router.push('/dashboard')
