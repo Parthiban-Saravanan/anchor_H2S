@@ -3,26 +3,23 @@
 import { useState, useEffect, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { getStoredSessionIds } from '@/lib/guest-session'
-import { Mic, Square, Volume2 } from 'lucide-react'
+import { Mic, Square } from 'lucide-react'
 
 export default function ContextCapture() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const mode = (searchParams.get('mode') as 'user' | 'caregiver') || 'user'
-  
+
   const [isListening, setIsListening] = useState(false)
-  const [transcript, setTranscript] = useState('')
-  const [isProcessing, setIsProcessing] = useState(false)
+  const [text, setText] = useState('')
+  const [inputMethod, setInputMethod] = useState<'voice' | 'typed'>('typed')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
-  
-  // Fallback context state
-  const [alone, setAlone] = useState<boolean | null>(null)
-  const [urgeLevel, setUrgeLevel] = useState<'mild' | 'strong' | null>(null)
-  const [location, setLocation] = useState<'home' | 'out' | null>(null)
+  const [speechSupported, setSpeechSupported] = useState(false)
   const [mounted, setMounted] = useState(false)
-  
+
   const recognitionRef = useRef<any>(null)
+  const baseTextRef = useRef('')
   const [userId, setUserId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -32,70 +29,99 @@ export default function ContextCapture() {
       setUserId(storedUserId)
     }
 
-    // Initialize Web Speech API
     const SpeechRecognition =
       typeof window !== 'undefined' &&
-      (window.SpeechRecognition || (window as any).webkitSpeechRecognition)
+      ((window as any).SpeechRecognition ||
+        (window as any).webkitSpeechRecognition)
 
     if (SpeechRecognition) {
-      recognitionRef.current = new SpeechRecognition()
-      recognitionRef.current.continuous = true
-      recognitionRef.current.interimResults = true
+      setSpeechSupported(true)
+      const recognition = new SpeechRecognition()
+      recognition.continuous = true
+      recognition.interimResults = true
+      recognition.lang = 'en-US'
 
-      recognitionRef.current.onstart = () => {
+      recognition.onstart = () => {
         setIsListening(true)
         setError('')
       }
 
-      recognitionRef.current.onresult = (event: any) => {
+      recognition.onresult = (event: any) => {
+        let finalTranscript = ''
         let interimTranscript = ''
         for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript
+          const chunk = event.results[i][0].transcript
           if (event.results[i].isFinal) {
-            setTranscript((prev) => prev + ' ' + transcript)
+            finalTranscript += chunk
           } else {
-            interimTranscript += transcript
+            interimTranscript += chunk
           }
         }
+        if (finalTranscript) {
+          baseTextRef.current = (
+            baseTextRef.current +
+            ' ' +
+            finalTranscript
+          ).trim()
+        }
+        const combined = (baseTextRef.current + ' ' + interimTranscript).trim()
+        setText(combined)
       }
 
-      recognitionRef.current.onerror = (event: any) => {
-        setError(`Microphone error: ${event.error}`)
+      recognition.onerror = (event: any) => {
+        setError(`Microphone error: ${event.error}. You can type instead.`)
         setIsListening(false)
       }
 
-      recognitionRef.current.onend = () => {
+      recognition.onend = () => {
         setIsListening(false)
+      }
+
+      recognitionRef.current = recognition
+    }
+
+    return () => {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop()
+        } catch {
+          // ignore
+        }
       }
     }
   }, [])
 
   const startListening = () => {
-    if (recognitionRef.current) {
-      setTranscript('')
-      setError('')
+    if (!recognitionRef.current) return
+    baseTextRef.current = text.trim()
+    setInputMethod('voice')
+    setError('')
+    try {
       recognitionRef.current.start()
-      setIsProcessing(true)
+    } catch {
+      // start() throws if already started; ignore
     }
   }
 
   const stopListening = () => {
     if (recognitionRef.current) {
       recognitionRef.current.stop()
-      setIsProcessing(false)
     }
   }
 
   const handleSubmit = async () => {
     if (!userId) {
-      setError('Session lost. Please reload.')
+      setError('Session lost. Please reload the page.')
       return
     }
 
-    if (!transcript.trim() && (!alone || !urgeLevel || !location)) {
-      setError(
-        'Please provide context either through voice or by selecting options'
-      )
+    if (isListening) {
+      stopListening()
+    }
+
+    const contextText = text.trim()
+    if (!contextText) {
+      setError('Please share what is going on, by voice or by typing.')
       return
     }
 
@@ -103,35 +129,28 @@ export default function ContextCapture() {
     setError('')
 
     try {
-      // Create session
       const sessionRes = await fetch('/api/capture-context', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           user_id: userId,
           mode,
-          voice_transcript: transcript,
-          context_alone: alone,
-          context_urge_level: urgeLevel,
-          context_location: location,
+          context_text: contextText,
+          input_method: inputMethod,
         }),
       })
 
       if (!sessionRes.ok) {
-        throw new Error('Failed to capture context')
+        const body = await sessionRes.json().catch(() => ({}))
+        throw new Error(body.error || 'Failed to capture context')
       }
 
       const { session_id } = await sessionRes.json()
 
-      // Generate AI response
       const aiRes = await fetch('/api/generate-response', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_id,
-          user_id: userId,
-          mode,
-        }),
+        body: JSON.stringify({ session_id, user_id: userId, mode }),
       })
 
       if (!aiRes.ok) {
@@ -140,8 +159,7 @@ export default function ContextCapture() {
 
       router.push(`/response/${session_id}`)
     } catch (err: any) {
-      setError(err.message || 'An error occurred. Please try again.')
-    } finally {
+      setError(err.message || 'Something went wrong. Please try again.')
       setIsSubmitting(false)
     }
   }
@@ -150,9 +168,7 @@ export default function ContextCapture() {
     return (
       <main className="min-h-screen bg-background text-foreground py-8 px-4">
         <div className="max-w-2xl mx-auto">
-          <div className="mb-8">
-            <h1 className="text-3xl font-bold text-primary mb-2">Loading...</h1>
-          </div>
+          <h1 className="text-3xl font-bold text-primary mb-2">Loading...</h1>
         </div>
       </main>
     )
@@ -169,139 +185,92 @@ export default function ContextCapture() {
           >
             ← Back
           </button>
-          <h1 className="text-3xl font-bold text-primary mb-2">
+          <h1 className="text-3xl font-bold text-primary mb-2 text-balance">
             {mode === 'user'
               ? "What's on your mind?"
               : 'Describe the situation'}
           </h1>
-          <p className="text-foreground/60">
+          <p className="text-foreground/60 text-pretty">
             {mode === 'user'
-              ? "Tell us what you are experiencing right now. We are listening."
-              : 'Share what you observe or what was shared with you.'}
+              ? 'Tell us what you are experiencing right now. Speak it aloud or type it, whatever feels easier.'
+              : 'Share what you observe or what was shared with you. Speak or type, whichever is easier.'}
           </p>
         </div>
 
         {/* Voice Input */}
-        <div className="bg-card rounded-2xl p-8 mb-8 border border-border shadow-sm">
-          <div className="flex justify-center mb-8">
+        <div className="bg-card rounded-2xl p-8 mb-6 border border-border shadow-sm">
+          <div className="flex flex-col items-center gap-4">
             <button
-              onClick={isProcessing ? stopListening : startListening}
-              className={`relative w-32 h-32 rounded-full flex items-center justify-center font-semibold text-white text-lg transition-all transform ${
-                isProcessing
-                  ? 'bg-red-500 hover:bg-red-600 scale-100'
+              type="button"
+              onClick={isListening ? stopListening : startListening}
+              disabled={!speechSupported || isSubmitting}
+              aria-label={isListening ? 'Stop recording' : 'Start recording'}
+              className={`relative w-28 h-28 rounded-full flex items-center justify-center text-primary-foreground transition-all transform disabled:opacity-40 disabled:cursor-not-allowed ${
+                isListening
+                  ? 'bg-destructive hover:brightness-110 animate-pulse'
                   : 'bg-gradient-to-r from-primary to-secondary hover:shadow-xl hover:scale-105'
-              } ${!isListening && isProcessing ? 'animate-pulse' : ''}`}
+              }`}
             >
-              {isProcessing ? (
+              {isListening ? (
                 <Square className="w-8 h-8" />
               ) : (
                 <Mic className="w-8 h-8" />
               )}
             </button>
+            <p className="text-sm text-foreground/60 text-center">
+              {!speechSupported
+                ? 'Voice input is not available in this browser, please type below.'
+                : isListening
+                  ? 'Listening... tap to stop.'
+                  : 'Tap the microphone to speak.'}
+            </p>
           </div>
-
-          {isListening && (
-            <p className="text-center text-secondary font-semibold mb-4 animate-pulse">
-              Listening...
-            </p>
-          )}
-
-          {transcript && (
-            <div className="bg-background rounded-lg p-4 mb-6">
-              <p className="text-foreground/80">{transcript}</p>
-            </div>
-          )}
-
-          {!recognitionRef.current && !transcript && (
-            <p className="text-center text-foreground/60 text-sm">
-              Voice recognition not available. Use the options below instead.
-            </p>
-          )}
         </div>
 
-        {/* Fallback Context Options */}
-        <div className="space-y-6">
-          <div>
-            <p className="font-semibold text-primary mb-3">Are you alone?</p>
-            <div className="grid grid-cols-2 gap-3">
-              {[
-                { label: 'Alone', value: true },
-                { label: 'With someone', value: false },
-              ].map((option) => (
-                <button
-                  key={String(option.value)}
-                  onClick={() => setAlone(option.value)}
-                  className={`p-3 rounded-lg font-semibold transition-all ${
-                    alone === option.value
-                      ? 'bg-secondary text-white'
-                      : 'bg-background border border-border text-foreground hover:border-secondary'
-                  }`}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <p className="font-semibold text-primary mb-3">
-              How strong is the urge?
-            </p>
-            <div className="grid grid-cols-2 gap-3">
-              {[
-                { label: 'Mild urge', value: 'mild' as const },
-                { label: 'Strong urge', value: 'strong' as const },
-              ].map((option) => (
-                <button
-                  key={option.value}
-                  onClick={() => setUrgeLevel(option.value)}
-                  className={`p-3 rounded-lg font-semibold transition-all ${
-                    urgeLevel === option.value
-                      ? 'bg-secondary text-white'
-                      : 'bg-background border border-border text-foreground hover:border-secondary'
-                  }`}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <p className="font-semibold text-primary mb-3">Where are you?</p>
-            <div className="grid grid-cols-2 gap-3">
-              {[
-                { label: 'At home', value: 'home' as const },
-                { label: 'Out', value: 'out' as const },
-              ].map((option) => (
-                <button
-                  key={option.value}
-                  onClick={() => setLocation(option.value)}
-                  className={`p-3 rounded-lg font-semibold transition-all ${
-                    location === option.value
-                      ? 'bg-secondary text-white'
-                      : 'bg-background border border-border text-foreground hover:border-secondary'
-                  }`}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          </div>
+        {/* Typed Input */}
+        <div className="bg-card rounded-2xl p-6 mb-6 border border-border shadow-sm">
+          <label
+            htmlFor="context-text"
+            className="block font-semibold text-primary mb-3"
+          >
+            {mode === 'user'
+              ? 'What are you feeling or facing?'
+              : 'What is happening?'}
+          </label>
+          <textarea
+            id="context-text"
+            value={text}
+            onChange={(e) => {
+              setText(e.target.value)
+              if (!isListening) setInputMethod('typed')
+              baseTextRef.current = e.target.value
+            }}
+            rows={5}
+            placeholder={
+              mode === 'user'
+                ? 'e.g. I am home alone and the cravings are getting strong...'
+                : 'e.g. They seem overwhelmed and I am not sure what to say...'
+            }
+            className="w-full px-4 py-3 rounded-lg bg-background border border-border focus:outline-none focus:ring-2 focus:ring-secondary text-foreground resize-none leading-relaxed"
+          />
         </div>
 
         {/* Error Message */}
         {error && (
-          <div className="mt-6 bg-red-500/10 border border-red-500/30 rounded-lg p-4 text-red-700 dark:text-red-400">
+          <div
+            role="alert"
+            className="mb-6 bg-destructive/10 border border-destructive/30 rounded-lg p-4 text-destructive"
+          >
             {error}
           </div>
         )}
 
         {/* Submit Button */}
         <button
+          type="button"
           onClick={handleSubmit}
-          disabled={isSubmitting || isProcessing}
-          className="w-full mt-8 bg-gradient-to-r from-primary to-secondary text-white font-semibold py-4 px-6 rounded-lg hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={isSubmitting}
+          className="w-full bg-gradient-to-r from-primary to-secondary text-primary-foreground font-semibold py-4 px-6 rounded-lg hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isSubmitting ? 'Getting support...' : 'Get Anchor Support'}
         </button>
